@@ -1,7 +1,11 @@
 import { useState } from 'react'
 import axios from 'axios'
 
-const API_URL = import.meta.env.VITE_API_URL
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
+
+// Generous timeout: Render free-tier services cold-start (~30-60s) and the
+// workflow endpoint also waits on Gemini, so allow plenty of headroom.
+axios.defaults.timeout = 120000
 
 const DIFFICULTY_STYLES = {
   easy: 'bg-emerald-100 text-emerald-700 ring-emerald-600/20',
@@ -148,6 +152,19 @@ function App() {
   const isLastQuestion = currentIndex >= questions.length - 1
 
   function friendlyError(err, fallback) {
+    // No HTTP response at all → network failure, CORS block, or the Render
+    // free-tier backend is asleep / still cold-starting.
+    if (!err?.response) {
+      if (err?.code === 'ECONNABORTED') {
+        return 'The request timed out. The server may be waking up from sleep — please wait a moment and try again.'
+      }
+      return `Could not reach the backend at ${API_BASE_URL}. It may be asleep (free tier spins down after inactivity) or starting up — give it ~30–60s and try again.`
+    }
+    // Gateway / unavailable errors from Render while the service boots.
+    const status = err.response.status
+    if (status === 502 || status === 503 || status === 504) {
+      return 'The backend is temporarily unavailable (it may be waking up). Please retry in a few seconds.'
+    }
     const detail = err?.response?.data?.detail || err?.message
     if (typeof detail === 'string' && detail) return detail
     return fallback
@@ -155,7 +172,7 @@ function App() {
 
   async function runWorkflow(text) {
     setLoadingMsg('Analyzing the job description and building your plan…')
-    const { data } = await axios.post(`${API_URL}/workflow/start`, {
+    const { data } = await axios.post(`${API_BASE_URL}/workflow/start`, {
       jd_text: text,
     })
     const qs = data.questions || []
@@ -206,7 +223,7 @@ function App() {
         setLoadingMsg('Extracting text from your PDF…')
         const form = new FormData()
         form.append('file', file)
-        const { data } = await axios.post(`${API_URL}/upload-jd`, form)
+        const { data } = await axios.post(`${API_BASE_URL}/upload-jd`, form)
         jd = (data.jd_text || '').trim()
       } else {
         setLoadingMsg('Reading your file…')
@@ -237,7 +254,7 @@ function App() {
     setEvaluating(true)
     setError('')
     try {
-      const { data } = await axios.post(`${API_URL}/evaluate-answer`, {
+      const { data } = await axios.post(`${API_BASE_URL}/evaluate-answer`, {
         question: currentQuestion.question,
         topic: currentQuestion.topic || '',
         difficulty: currentQuestion.difficulty || '',
@@ -277,7 +294,7 @@ function App() {
           recommended_topics: e.recommended_topics,
         })),
       }
-      const { data } = await axios.post(`${API_URL}/generate-report`, payload)
+      const { data } = await axios.post(`${API_BASE_URL}/generate-report`, payload)
       setReport(data)
     } catch (err) {
       setReportError(
